@@ -1,631 +1,612 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+
+type Profile = {
+  id: string;
+  email: string | null;
+  role?: string | null;
+  company_name?: string | null;
+};
+
+type Transfer = {
+  id: string;
+  user_id: string;
+  destination: string | null;
+  quantity: number | string | null;
+  damaged: number | string | null;
+  shipment_date: string | null;
+  status: string | null;
+  created_at: string | null;
+};
+
+const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.toLowerCase() || "";
+
+function formatDate(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString();
+}
+
+function statusLabel(status?: string | null) {
+  if (!status) return "Unknown";
+  if (status === "pending_review") return "Pending Review";
+  if (status === "completed") return "Completed";
+  return status;
+}
 
 export default function DashboardPage() {
   const supabase = createClient();
 
-  const [transfers, setTransfers] = useState<any[]>([]);
-  const [toName, setToName] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [pageError, setPageError] = useState("");
+
+  const [userId, setUserId] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
+
+  const [destination, setDestination] = useState("");
   const [quantity, setQuantity] = useState("");
-  const [damagedLost, setDamagedLost] = useState("");
+  const [damaged, setDamaged] = useState("");
   const [shipmentDate, setShipmentDate] = useState("");
+
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
-  const [userEmail, setUserEmail] = useState("");
 
-  const isAdmin = userEmail === "daverino1@hotmail.com";
+  const loadDashboard = async () => {
+    setLoading(true);
+    setPageError("");
 
-  const fetchTransfers = async () => {
     const {
       data: { user },
+      error: userError,
     } = await supabase.auth.getUser();
 
-    if (!user) return;
+    if (userError) {
+      console.log("Auth user fetch error:", userError.message || userError);
+    }
 
-    setUserEmail(user.email || "");
+    if (!user) {
+      window.location.href = "/login";
+      return;
+    }
 
-    const { data, error } = await supabase
+    const cleanEmail = (user.email || "").toLowerCase();
+    const metadataCompanyName =
+      typeof user.user_metadata?.company_name === "string"
+        ? user.user_metadata.company_name.trim()
+        : "";
+
+    setUserId(user.id);
+    setAuthEmail(cleanEmail);
+
+    const { data: profileData, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, email, role, company_name")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.log("Profile fetch error:", profileError.message || profileError);
+    }
+
+    let resolvedProfile = (profileData as Profile | null) || null;
+
+    if (!resolvedProfile || (!resolvedProfile.company_name && metadataCompanyName)) {
+      const upsertPayload = {
+        id: user.id,
+        email: cleanEmail,
+        role: resolvedProfile?.role || "user",
+        company_name: metadataCompanyName || resolvedProfile?.company_name || null,
+      };
+
+      const { error: upsertError } = await supabase
+        .from("profiles")
+        .upsert(upsertPayload, { onConflict: "id" });
+
+      if (upsertError) {
+        console.log("Profile upsert error:", upsertError.message || upsertError);
+      } else {
+        resolvedProfile = {
+          id: user.id,
+          email: cleanEmail,
+          role: resolvedProfile?.role || "user",
+          company_name: metadataCompanyName || resolvedProfile?.company_name || null,
+        };
+      }
+    }
+
+    setProfile(resolvedProfile);
+
+    const { data: transfersData, error: transfersError } = await supabase
       .from("transfers")
       .select("*")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
 
-    if (error) {
-      console.error(error);
+    if (transfersError) {
+      console.log("Transfers fetch error:", transfersError.message || transfersError);
+      setTransfers([]);
     } else {
-      setTransfers(data || []);
+      setTransfers((transfersData as Transfer[]) || []);
     }
+
+    setLoading(false);
   };
 
   useEffect(() => {
-    fetchTransfers();
-
-    const channel = supabase
-      .channel("transfers-changes")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "transfers" },
-        () => {
-          fetchTransfers();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    loadDashboard();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const addTransfer = async (e: any) => {
+  const companyDisplayName =
+    profile?.company_name?.trim() || profile?.email || authEmail || "Your Company";
+
+  const secondaryIdentity =
+    profile?.company_name?.trim() && (profile.email || authEmail)
+      ? profile.email || authEmail
+      : "";
+
+  const isAdmin =
+    (profile?.role || "").toLowerCase() === "admin" ||
+    (authEmail && ADMIN_EMAIL && authEmail === ADMIN_EMAIL);
+
+  const filteredTransfers = useMemo(() => {
+    const now = new Date();
+
+    return transfers.filter((transfer) => {
+      if (statusFilter !== "all" && (transfer.status || "") !== statusFilter) {
+        return false;
+      }
+
+      if (dateFilter === "all") {
+        return true;
+      }
+
+      const rawDate = transfer.shipment_date || transfer.created_at;
+      if (!rawDate) return false;
+
+      const transferDate = new Date(rawDate);
+      if (Number.isNaN(transferDate.getTime())) return false;
+
+      if (dateFilter === "today") {
+        return transferDate.toDateString() === now.toDateString();
+      }
+
+      if (dateFilter === "last7") {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(now.getDate() - 7);
+        return transferDate >= sevenDaysAgo;
+      }
+
+      if (dateFilter === "last30") {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(now.getDate() - 30);
+        return transferDate >= thirtyDaysAgo;
+      }
+
+      return true;
+    });
+  }, [transfers, statusFilter, dateFilter]);
+
+  const totals = useMemo(() => {
+    return filteredTransfers.reduce(
+      (acc, transfer) => {
+        const qty = Number(transfer.quantity || 0);
+        const dmg = Number(transfer.damaged || 0);
+        const status = transfer.status || "";
+
+        acc.totalTransfers += 1;
+        acc.totalPallets += qty;
+        acc.damagedLost += dmg;
+        acc.netDelivered += Math.max(qty - dmg, 0);
+
+        if (status === "pending_review") acc.pending += 1;
+        if (status === "completed") acc.completed += 1;
+
+        return acc;
+      },
+      {
+        totalTransfers: 0,
+        totalPallets: 0,
+        damagedLost: 0,
+        netDelivered: 0,
+        pending: 0,
+        completed: 0,
+      }
+    );
+  }, [filteredTransfers]);
+
+  const completionRate =
+    totals.totalTransfers > 0
+      ? Math.round((totals.completed / totals.totalTransfers) * 100)
+      : 0;
+
+  const pendingRate =
+    totals.totalTransfers > 0
+      ? Math.round((totals.pending / totals.totalTransfers) * 100)
+      : 0;
+
+  const lossPercentage =
+    totals.totalPallets > 0
+      ? ((totals.damagedLost / totals.totalPallets) * 100).toFixed(1)
+      : "0.0";
+
+  const handleAddTransfer = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const cleanDestination = destination.trim();
+    const qty = Number(quantity || 0);
+    const dmg = Number(damaged || 0);
 
-    if (!user) {
-      alert("Not logged in");
+    if (!cleanDestination) {
+      alert("Destination name is required.");
       return;
     }
 
-    if (!toName.trim()) {
-      alert("Please enter a destination name");
+    if (Number.isNaN(qty) || qty <= 0) {
+      alert("Quantity must be greater than 0.");
       return;
     }
 
-    if (!quantity || Number(quantity) <= 0) {
-      alert("Quantity must be greater than 0");
+    if (Number.isNaN(dmg) || dmg < 0) {
+      alert("Damaged / lost pallets must be 0 or more.");
       return;
     }
 
-    if (!shipmentDate) {
-      alert("Please select a shipment date");
+    if (!userId) {
+      alert("User not loaded yet. Please try again.");
       return;
     }
 
-    if (damagedLost && Number(damagedLost) < 0) {
-      alert("Damaged/Lost pallets cannot be negative");
-      return;
-    }
-
-    if (Number(damagedLost || 0) > Number(quantity)) {
-      alert("Damaged/Lost pallets cannot be greater than quantity");
-      return;
-    }
+    setSubmitting(true);
 
     const { error } = await supabase.from("transfers").insert([
       {
-        transfer_number: "T-" + Math.floor(Math.random() * 10000),
-        to_name: toName,
-        quantity: Number(quantity),
-        damaged_lost: damagedLost ? Number(damagedLost) : 0,
-        transfer_date: shipmentDate,
+        user_id: userId,
+        destination: cleanDestination,
+        quantity: qty,
+        damaged: dmg,
+        shipment_date: shipmentDate || null,
         status: "pending_review",
-        user_id: user.id,
       },
     ]);
 
     if (error) {
       alert(error.message);
-    } else {
-      setToName("");
-      setQuantity("");
-      setDamagedLost("");
-      setShipmentDate("");
-      fetchTransfers();
+      setSubmitting(false);
+      return;
     }
+
+    setDestination("");
+    setQuantity("");
+    setDamaged("");
+    setShipmentDate("");
+    await loadDashboard();
+    setSubmitting(false);
   };
 
-  const isInDateRange = (transferDateValue: string, filter: string) => {
-    if (filter === "all") return true;
-    if (!transferDateValue) return false;
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  };
 
-    const transferDate = new Date(transferDateValue);
-    const now = new Date();
-
-    const startOfToday = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
+        <div className="rounded-3xl bg-white px-8 py-6 shadow-sm">
+          <p className="text-lg font-semibold text-slate-900">Loading dashboard...</p>
+        </div>
+      </div>
     );
-
-    if (filter === "today") {
-      const endOfToday = new Date(startOfToday);
-      endOfToday.setDate(endOfToday.getDate() + 1);
-      return transferDate >= startOfToday && transferDate < endOfToday;
-    }
-
-    if (filter === "week") {
-      const sevenDaysAgo = new Date(startOfToday);
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-      return transferDate >= sevenDaysAgo;
-    }
-
-    if (filter === "month") {
-      const thirtyDaysAgo = new Date(startOfToday);
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
-      return transferDate >= thirtyDaysAgo;
-    }
-
-    return true;
-  };
-
-  const filteredTransfers = useMemo(() => {
-    return transfers.filter((t) => {
-      const matchesStatus =
-        statusFilter === "all" ? true : t.status === statusFilter;
-
-      const matchesDate = isInDateRange(t.transfer_date, dateFilter);
-
-      return matchesStatus && matchesDate;
-    });
-  }, [transfers, statusFilter, dateFilter]);
-
-  const totalTransfers = filteredTransfers.length;
-  const totalPallets = filteredTransfers.reduce(
-    (sum, t) => sum + (Number(t.quantity) || 0),
-    0
-  );
-  const totalDamagedLost = filteredTransfers.reduce(
-    (sum, t) => sum + (Number(t.damaged_lost) || 0),
-    0
-  );
-  const totalNetDelivered = filteredTransfers.reduce(
-    (sum, t) =>
-      sum + ((Number(t.quantity) || 0) - (Number(t.damaged_lost) || 0)),
-    0
-  );
-  const pendingCount = filteredTransfers.filter(
-    (t) => t.status === "pending_review"
-  ).length;
-  const completedCount = filteredTransfers.filter(
-    (t) => t.status === "completed"
-  ).length;
-  const lossPercentage =
-    totalPallets > 0 ? ((totalDamagedLost / totalPallets) * 100).toFixed(1) : "0.0";
-  const completionPercent =
-    totalTransfers > 0 ? Math.round((completedCount / totalTransfers) * 100) : 0;
-  const pendingPercent =
-    totalTransfers > 0 ? Math.round((pendingCount / totalTransfers) * 100) : 0;
+  }
 
   return (
-    <div className="min-h-screen bg-slate-100">
-      <div className="mx-auto max-w-7xl p-6">
-        <div className="mb-8 flex flex-col gap-4 rounded-2xl bg-white px-6 py-5 shadow-sm md:flex-row md:items-center md:justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">
-              Adams Pallet Plus
-            </h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Manage pallet transfers, shipment dates, and damaged/lost pallet counts
-            </p>
-            <p className="mt-2 text-xs font-medium text-slate-400">
-              Signed in as: {userEmail || "Loading..."}
-            </p>
-          </div>
+    <div className="min-h-screen bg-slate-100 px-4 py-6 md:px-6">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <div className="rounded-3xl bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h1 className="text-4xl font-bold tracking-tight text-slate-900">
+                Adams Pallet Plus
+              </h1>
+              <p className="mt-2 text-slate-500">
+                Manage pallet transfers, shipment dates, and damaged/lost pallet counts.
+              </p>
 
-          <button
-            onClick={async () => {
-              await supabase.auth.signOut();
-              window.location.href = "/login";
-            }}
-            className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-900"
-          >
-            Logout
-          </button>
-        </div>
-
-        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
-            <p className="text-sm text-slate-500">Total Transfers</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">
-              {totalTransfers}
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
-            <p className="text-sm text-slate-500">Total Pallets</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">
-              {totalPallets}
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
-            <p className="text-sm text-slate-500">Damaged / Lost</p>
-            <p className="mt-2 text-2xl font-bold text-red-600">
-              {totalDamagedLost}
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
-            <p className="text-sm text-slate-500">Net Delivered</p>
-            <p className="mt-2 text-2xl font-bold text-green-600">
-              {totalNetDelivered}
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
-            <p className="text-sm text-slate-500">Pending</p>
-            <p className="mt-2 text-2xl font-bold text-amber-600">
-              {pendingCount}
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
-            <p className="text-sm text-slate-500">Completed</p>
-            <p className="mt-2 text-2xl font-bold text-green-600">
-              {completedCount}
-            </p>
-          </div>
-        </div>
-
-        <div className="mb-6 grid gap-4 lg:grid-cols-3">
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-700">Completion Rate</p>
-              <p className="text-sm text-slate-500">{completionPercent}%</p>
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Company
+                </p>
+                <p className="mt-1 text-lg font-bold text-slate-900">
+                  {companyDisplayName}
+                </p>
+                {secondaryIdentity ? (
+                  <p className="mt-1 text-sm text-slate-500">{secondaryIdentity}</p>
+                ) : null}
+              </div>
             </div>
-            <div className="h-3 w-full rounded-full bg-slate-200">
+
+            <div className="flex flex-wrap gap-3">
+              {isAdmin ? (
+                <a
+                  href="/admin"
+                  className="rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Admin Dashboard
+                </a>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={signOut}
+                className="rounded-2xl bg-[#11284a] px-4 py-3 text-sm font-semibold text-white hover:bg-[#0c1d36]"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+
+          {pageError ? (
+            <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {pageError}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Total Transfers</p>
+            <p className="mt-3 text-4xl font-bold text-slate-900">{totals.totalTransfers}</p>
+          </div>
+
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Total Pallets</p>
+            <p className="mt-3 text-4xl font-bold text-slate-900">{totals.totalPallets}</p>
+          </div>
+
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Damaged / Lost</p>
+            <p className="mt-3 text-4xl font-bold text-red-600">{totals.damagedLost}</p>
+          </div>
+
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Net Delivered</p>
+            <p className="mt-3 text-4xl font-bold text-green-600">{totals.netDelivered}</p>
+          </div>
+
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Pending</p>
+            <p className="mt-3 text-4xl font-bold text-amber-600">{totals.pending}</p>
+          </div>
+
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Completed</p>
+            <p className="mt-3 text-4xl font-bold text-slate-900">{totals.completed}</p>
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-slate-500">Completion Rate</p>
+              <p className="text-sm font-semibold text-slate-700">{completionRate}%</p>
+            </div>
+            <div className="mt-3 h-3 rounded-full bg-slate-100">
               <div
-                className="h-3 rounded-full bg-green-600"
-                style={{ width: `${completionPercent}%` }}
+                className="h-3 rounded-full bg-green-500"
+                style={{ width: `${completionRate}%` }}
               />
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-700">Pending Rate</p>
-              <p className="text-sm text-slate-500">{pendingPercent}%</p>
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-slate-500">Pending Rate</p>
+              <p className="text-sm font-semibold text-slate-700">{pendingRate}%</p>
             </div>
-            <div className="h-3 w-full rounded-full bg-slate-200">
+            <div className="mt-3 h-3 rounded-full bg-slate-100">
               <div
                 className="h-3 rounded-full bg-amber-500"
-                style={{ width: `${pendingPercent}%` }}
+                style={{ width: `${pendingRate}%` }}
               />
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-700">Loss Percentage</p>
-              <p
-                className={`text-sm font-semibold ${
-                  Number(lossPercentage) > 10
-                    ? "text-red-600"
-                    : Number(lossPercentage) > 0
-                    ? "text-amber-600"
-                    : "text-green-600"
-                }`}
-              >
-                {lossPercentage}%
-              </p>
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-slate-500">Loss Percentage</p>
+              <p className="text-sm font-semibold text-green-600">{lossPercentage}%</p>
             </div>
-            <div className="h-3 w-full rounded-full bg-slate-200">
+            <div className="mt-3 h-3 rounded-full bg-slate-100">
               <div
-                className={`h-3 rounded-full ${
-                  Number(lossPercentage) > 10
-                    ? "bg-red-600"
-                    : Number(lossPercentage) > 0
-                    ? "bg-amber-500"
-                    : "bg-green-600"
-                }`}
+                className="h-3 rounded-full bg-[#11284a]"
                 style={{ width: `${Math.min(Number(lossPercentage), 100)}%` }}
               />
             </div>
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          <div className="rounded-2xl bg-white p-6 shadow-sm lg:col-span-1">
-            <h2 className="text-xl font-semibold text-slate-900">
-              Add Transfer
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Create a new pallet transfer
-            </p>
+        <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+          <div className="rounded-3xl bg-white p-6 shadow-sm">
+            <h2 className="text-2xl font-bold text-slate-900">Add Transfer</h2>
+            <p className="mt-2 text-slate-500">Create a new pallet transfer.</p>
 
-            <form onSubmit={addTransfer} className="mt-5 space-y-4">
-              <input
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
-                placeholder="Destination Name"
-                value={toName}
-                onChange={(e) => setToName(e.target.value)}
-              />
+            <form onSubmit={handleAddTransfer} className="mt-6 space-y-4">
+              <div>
+                <input
+                  type="text"
+                  value={destination}
+                  onChange={(e) => setDestination(e.target.value)}
+                  placeholder="Destination Name"
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                  required
+                />
+              </div>
 
-              <input
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
-                placeholder="Quantity"
-                type="number"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-              />
+              <div>
+                <input
+                  type="number"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  placeholder="Quantity"
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                  required
+                />
+              </div>
 
-              <input
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
-                placeholder="Damaged / Lost Pallets"
-                type="number"
-                value={damagedLost}
-                onChange={(e) => setDamagedLost(e.target.value)}
-              />
+              <div>
+                <input
+                  type="number"
+                  value={damaged}
+                  onChange={(e) => setDamaged(e.target.value)}
+                  placeholder="Damaged / Lost Pallets"
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                />
+              </div>
 
-              <input
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
-                type="date"
-                value={shipmentDate}
-                onChange={(e) => setShipmentDate(e.target.value)}
-              />
+              <div>
+                <input
+                  type="date"
+                  value={shipmentDate}
+                  onChange={(e) => setShipmentDate(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                />
+              </div>
 
               <button
                 type="submit"
-                className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700"
+                disabled={submitting}
+                className="w-full rounded-2xl bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
               >
-                Add Transfer
+                {submitting ? "Adding Transfer..." : "Add Transfer"}
               </button>
             </form>
           </div>
 
-          <div className="rounded-2xl bg-white p-6 shadow-sm lg:col-span-2">
-            <div className="mb-5 flex flex-col gap-5">
+          <div className="rounded-3xl bg-white p-6 shadow-sm">
+            <h2 className="text-2xl font-bold text-slate-900">Transfers</h2>
+            <p className="mt-2 text-slate-500">View and manage your pallet movements.</p>
+
+            <div className="mt-6 space-y-5">
               <div>
-                <h2 className="text-xl font-semibold text-slate-900">
-                  Transfers
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  View and manage your pallet movements
-                </p>
+                <p className="mb-2 text-sm font-medium text-slate-700">Status Filter</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "all", label: "All" },
+                    { value: "pending_review", label: "Pending" },
+                    { value: "completed", label: "Completed" },
+                  ].map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => setStatusFilter(item.value)}
+                      className={`rounded-2xl px-4 py-2 text-sm font-semibold ${
+                        statusFilter === item.value
+                          ? "bg-[#11284a] text-white"
+                          : "border border-slate-300 text-slate-700 hover:bg-slate-100"
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="flex flex-col gap-3">
-                <div>
-                  <p className="mb-2 text-sm font-semibold text-slate-700">
-                    Status Filter
-                  </p>
-                  <div className="flex gap-2">
+              <div>
+                <p className="mb-2 text-sm font-medium text-slate-700">Date Filter</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "all", label: "All Dates" },
+                    { value: "today", label: "Today" },
+                    { value: "last7", label: "Last 7 Days" },
+                    { value: "last30", label: "Last 30 Days" },
+                  ].map((item) => (
                     <button
-                      onClick={() => setStatusFilter("all")}
-                      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-                        statusFilter === "all"
-                          ? "bg-slate-900 text-white"
-                          : "border border-slate-300 bg-white text-slate-700"
+                      key={item.value}
+                      type="button"
+                      onClick={() => setDateFilter(item.value)}
+                      className={`rounded-2xl px-4 py-2 text-sm font-semibold ${
+                        dateFilter === item.value
+                          ? "bg-[#11284a] text-white"
+                          : "border border-slate-300 text-slate-700 hover:bg-slate-100"
                       }`}
                     >
-                      All
+                      {item.label}
                     </button>
-
-                    <button
-                      onClick={() => setStatusFilter("pending_review")}
-                      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-                        statusFilter === "pending_review"
-                          ? "bg-amber-500 text-white"
-                          : "border border-slate-300 bg-white text-slate-700"
-                      }`}
-                    >
-                      Pending
-                    </button>
-
-                    <button
-                      onClick={() => setStatusFilter("completed")}
-                      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-                        statusFilter === "completed"
-                          ? "bg-green-600 text-white"
-                          : "border border-slate-300 bg-white text-slate-700"
-                      }`}
-                    >
-                      Completed
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <p className="mb-2 text-sm font-semibold text-slate-700">
-                    Date Filter
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => setDateFilter("all")}
-                      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-                        dateFilter === "all"
-                          ? "bg-slate-900 text-white"
-                          : "border border-slate-300 bg-white text-slate-700"
-                      }`}
-                    >
-                      All Dates
-                    </button>
-
-                    <button
-                      onClick={() => setDateFilter("today")}
-                      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-                        dateFilter === "today"
-                          ? "bg-blue-600 text-white"
-                          : "border border-slate-300 bg-white text-slate-700"
-                      }`}
-                    >
-                      Today
-                    </button>
-
-                    <button
-                      onClick={() => setDateFilter("week")}
-                      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-                        dateFilter === "week"
-                          ? "bg-blue-600 text-white"
-                          : "border border-slate-300 bg-white text-slate-700"
-                      }`}
-                    >
-                      Last 7 Days
-                    </button>
-
-                    <button
-                      onClick={() => setDateFilter("month")}
-                      className={`rounded-xl px-3 py-2 text-sm font-medium ${
-                        dateFilter === "month"
-                          ? "bg-blue-600 text-white"
-                          : "border border-slate-300 bg-white text-slate-700"
-                      }`}
-                    >
-                      Last 30 Days
-                    </button>
-                  </div>
+                  ))}
                 </div>
               </div>
             </div>
 
-            <div className="space-y-4">
+            <div className="mt-6 overflow-hidden rounded-3xl border border-slate-200">
               {filteredTransfers.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-slate-500">
+                <div className="p-8 text-center text-slate-500">
                   No transfers found for the current filters.
                 </div>
               ) : (
-                filteredTransfers.map((t) => {
-                  const damaged = Number(t.damaged_lost) || 0;
-                  const qty = Number(t.quantity) || 0;
-                  const netDelivered = qty - damaged;
-                  const rowLossPercent =
-                    qty > 0 ? ((damaged / qty) * 100).toFixed(1) : "0.0";
+                <div className="divide-y divide-slate-200">
+                  {filteredTransfers.map((transfer) => {
+                    const qty = Number(transfer.quantity || 0);
+                    const dmg = Number(transfer.damaged || 0);
+                    const net = Math.max(qty - dmg, 0);
 
-                  return (
-                    <div
-                      key={t.id}
-                      className={`rounded-2xl border p-5 ${
-                        damaged > 0
-                          ? "border-red-200 bg-red-50"
-                          : "border-slate-200 bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                        <div className="space-y-2">
-                          <p className="text-lg font-bold text-slate-900">
-                            {t.transfer_number}
-                          </p>
+                    return (
+                      <div key={transfer.id} className="bg-white p-5">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div>
+                            <p className="text-lg font-bold text-slate-900">
+                              {transfer.destination || "Unnamed Destination"}
+                            </p>
+                            <p className="mt-1 text-sm text-slate-500">
+                              {formatDate(transfer.shipment_date || transfer.created_at)}
+                            </p>
+                            <p className="mt-2 text-sm text-slate-500">
+                              Company: {companyDisplayName}
+                            </p>
+                          </div>
 
-                          <p className="text-slate-700">
-                            <span className="font-semibold">Destination:</span>{" "}
-                            {t.to_name}
-                          </p>
-
-                          <p className="text-slate-700">
-                            <span className="font-semibold">Quantity:</span>{" "}
-                            {qty}
-                          </p>
-
-                          <p className="text-slate-700">
-                            <span className="font-semibold">Damaged/Lost:</span>{" "}
-                            <span
-                              className={
-                                damaged > 0
-                                  ? "font-semibold text-red-600"
-                                  : "font-semibold text-slate-700"
-                              }
-                            >
-                              {damaged}
-                            </span>
-                          </p>
-
-                          <p className="text-slate-700">
-                            <span className="font-semibold">Net Delivered:</span>{" "}
-                            <span
-                              className={
-                                damaged > 0
-                                  ? "font-semibold text-red-600"
-                                  : "font-semibold text-green-600"
-                              }
-                            >
-                              {netDelivered}
-                            </span>
-                          </p>
-
-                          <p className="text-slate-700">
-                            <span className="font-semibold">Loss %:</span>{" "}
-                            <span
-                              className={
-                                Number(rowLossPercent) > 10
-                                  ? "font-semibold text-red-600"
-                                  : Number(rowLossPercent) > 0
-                                  ? "font-semibold text-amber-600"
-                                  : "font-semibold text-green-600"
-                              }
-                            >
-                              {rowLossPercent}%
-                            </span>
-                          </p>
-
-                          <p className="text-slate-700">
-                            <span className="font-semibold">Shipment Date:</span>{" "}
-                            {t.transfer_date}
-                          </p>
-
-                          <p>
-                            <span className="font-semibold text-slate-700">
-                              Status:
-                            </span>{" "}
-                            <span
-                              className={`rounded-full px-3 py-1 text-sm font-semibold ${
-                                t.status === "completed"
-                                  ? "bg-green-100 text-green-700"
-                                  : "bg-yellow-100 text-yellow-700"
-                              }`}
-                            >
-                              {t.status}
-                            </span>
-                          </p>
+                          <span
+                            className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${
+                              transfer.status === "completed"
+                                ? "bg-green-100 text-green-700"
+                                : "bg-amber-100 text-amber-700"
+                            }`}
+                          >
+                            {statusLabel(transfer.status)}
+                          </span>
                         </div>
 
-                        {isAdmin ? (
-                          <div className="flex gap-2">
-                            <button
-                              onClick={async () => {
-                                const { error } = await supabase
-                                  .from("transfers")
-                                  .delete()
-                                  .eq("id", t.id);
-
-                                if (error) {
-                                  alert(error.message);
-                                } else {
-                                  fetchTransfers();
-                                }
-                              }}
-                              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
-                            >
-                              Delete
-                            </button>
-
-                            <button
-                              onClick={async () => {
-                                const newStatus =
-                                  t.status === "pending_review"
-                                    ? "completed"
-                                    : "pending_review";
-
-                                const { error } = await supabase
-                                  .from("transfers")
-                                  .update({ status: newStatus })
-                                  .eq("id", t.id);
-
-                                if (error) {
-                                  alert(error.message);
-                                } else {
-                                  fetchTransfers();
-                                }
-                              }}
-                              className="rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700"
-                            >
-                              {t.status === "pending_review"
-                                ? "Mark Complete"
-                                : "Mark Pending"}
-                            </button>
+                        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                          <div className="rounded-2xl bg-slate-50 p-4">
+                            <p className="text-xs uppercase tracking-wide text-slate-500">
+                              Quantity
+                            </p>
+                            <p className="mt-2 text-xl font-bold text-slate-900">{qty}</p>
                           </div>
-                        ) : (
-                          <div className="rounded-xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-600">
-                            Admin controls only
+
+                          <div className="rounded-2xl bg-slate-50 p-4">
+                            <p className="text-xs uppercase tracking-wide text-slate-500">
+                              Damaged / Lost
+                            </p>
+                            <p className="mt-2 text-xl font-bold text-red-600">{dmg}</p>
                           </div>
-                        )}
+
+                          <div className="rounded-2xl bg-slate-50 p-4">
+                            <p className="text-xs uppercase tracking-wide text-slate-500">
+                              Net Delivered
+                            </p>
+                            <p className="mt-2 text-xl font-bold text-green-600">{net}</p>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>
