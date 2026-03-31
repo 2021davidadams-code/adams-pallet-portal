@@ -8,6 +8,7 @@ type Profile = {
   email: string;
   role: string;
   company_name?: string | null;
+  is_active?: boolean | null;
 };
 
 type Transfer = {
@@ -38,6 +39,13 @@ type EditTransferForm = {
   damaged: string;
   shipment_date: string;
   status: string;
+};
+
+type EditUserForm = {
+  id: string;
+  company_name: string;
+  role: string;
+  is_active: boolean;
 };
 
 const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.toLowerCase() || "";
@@ -86,6 +94,7 @@ export default function AdminPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
   const [editingTransfer, setEditingTransfer] = useState<EditTransferForm | null>(null);
+  const [editingUser, setEditingUser] = useState<EditUserForm | null>(null);
   const [busyAction, setBusyAction] = useState<string>("");
   const [pageError, setPageError] = useState("");
 
@@ -112,7 +121,7 @@ export default function AdminPage() {
   const fetchProfiles = async () => {
     const { data, error } = await supabase
       .from("profiles")
-      .select("id, email, role, company_name")
+      .select("id, email, role, company_name, is_active")
       .order("email", { ascending: true });
 
     if (error) {
@@ -194,11 +203,12 @@ export default function AdminPage() {
       return;
     }
 
-    setAuthEmail((user.email || "").toLowerCase());
+    const currentEmail = (user.email || "").toLowerCase();
+    setAuthEmail(currentEmail);
 
     const { data: profileById, error: profileByIdError } = await supabase
       .from("profiles")
-      .select("id, email, role, company_name")
+      .select("id, email, role, company_name, is_active")
       .eq("id", user.id)
       .maybeSingle();
 
@@ -207,8 +217,8 @@ export default function AdminPage() {
     if (!resolvedProfile && user.email) {
       const { data: profileByEmail } = await supabase
         .from("profiles")
-        .select("id, email, role, company_name")
-        .eq("email", user.email.toLowerCase())
+        .select("id, email, role, company_name, is_active")
+        .eq("email", currentEmail)
         .maybeSingle();
 
       resolvedProfile = profileByEmail as Profile | null;
@@ -219,10 +229,12 @@ export default function AdminPage() {
     }
 
     const emailIsAdmin =
-      !!user.email && user.email.toLowerCase() === ADMIN_EMAIL && ADMIN_EMAIL !== "";
+      !!currentEmail && currentEmail === ADMIN_EMAIL && ADMIN_EMAIL !== "";
+
+    const profileIsActive = resolvedProfile?.is_active !== false;
 
     const hasAdminAccess =
-      resolvedProfile?.role === "admin" || emailIsAdmin;
+      profileIsActive && (resolvedProfile?.role === "admin" || emailIsAdmin);
 
     if (!hasAdminAccess) {
       setIsAdmin(false);
@@ -470,17 +482,110 @@ export default function AdminPage() {
     setBusyAction("");
   };
 
-  const updateUserRole = async (profile: Profile, nextRole: "admin" | "user") => {
-    if (profile.email.toLowerCase() === ADMIN_EMAIL && nextRole !== "admin") {
+  const startEditUser = (profile: Profile) => {
+    setEditingUser({
+      id: profile.id,
+      company_name: profile.company_name || "",
+      role: profile.role || "user",
+      is_active: profile.is_active !== false,
+    });
+  };
+
+  const cancelEditUser = () => {
+    setEditingUser(null);
+  };
+
+  const saveUserEdits = async () => {
+    if (!editingUser) return;
+
+    const originalProfile = profiles.find((profile) => profile.id === editingUser.id);
+    if (!originalProfile) return;
+
+    const cleanCompanyName = editingUser.company_name.trim();
+    if (!cleanCompanyName) {
+      alert("Company name is required.");
+      return;
+    }
+
+    const originalEmail = (originalProfile.email || "").toLowerCase();
+
+    if (originalEmail === ADMIN_EMAIL && editingUser.role !== "admin") {
       alert("You cannot remove admin from the protected admin email.");
       return;
     }
 
-    setBusyAction(`role-${profile.id}`);
+    if (originalEmail === ADMIN_EMAIL && editingUser.is_active === false) {
+      alert("You cannot remove access for the protected admin email.");
+      return;
+    }
+
+    if (originalEmail === authEmail && editingUser.is_active === false) {
+      alert("You cannot remove access for your current admin session.");
+      return;
+    }
+
+    setBusyAction(`user-save-${editingUser.id}`);
+
+    const payload = {
+      company_name: cleanCompanyName,
+      role: editingUser.role,
+      is_active: editingUser.is_active,
+    };
 
     const { error } = await supabase
       .from("profiles")
-      .update({ role: nextRole })
+      .update(payload)
+      .eq("id", editingUser.id);
+
+    if (error) {
+      alert(error.message);
+      setBusyAction("");
+      return;
+    }
+
+    await addAuditLog("user_update", "profile", editingUser.id, {
+      email: originalProfile.email,
+      before: {
+        company_name: originalProfile.company_name,
+        role: originalProfile.role,
+        is_active: originalProfile.is_active,
+      },
+      after: payload,
+    });
+
+    await fetchProfiles();
+    await fetchAuditLogs();
+    setEditingUser(null);
+    setBusyAction("");
+  };
+
+  const toggleUserAccess = async (profile: Profile) => {
+    const email = (profile.email || "").toLowerCase();
+    const nextIsActive = profile.is_active === false ? true : false;
+
+    if (email === ADMIN_EMAIL && !nextIsActive) {
+      alert("You cannot remove access for the protected admin email.");
+      return;
+    }
+
+    if (email === authEmail && !nextIsActive) {
+      alert("You cannot remove access for your current admin session.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      nextIsActive
+        ? `Restore access for ${profile.company_name?.trim() || profile.email}?`
+        : `Remove access for ${profile.company_name?.trim() || profile.email}?`
+    );
+
+    if (!confirmed) return;
+
+    setBusyAction(`access-${profile.id}`);
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ is_active: nextIsActive })
       .eq("id", profile.id);
 
     if (error) {
@@ -489,11 +594,11 @@ export default function AdminPage() {
       return;
     }
 
-    await addAuditLog("role_change", "profile", profile.id, {
+    await addAuditLog("user_access_change", "profile", profile.id, {
       email: profile.email,
       company_name: profile.company_name,
-      from: profile.role,
-      to: nextRole,
+      from: profile.is_active !== false,
+      to: nextIsActive,
     });
 
     await fetchProfiles();
@@ -516,7 +621,10 @@ export default function AdminPage() {
       ],
       ...filteredTransfers.map((transfer) => {
         const company = getUserDisplayName(transfer.user_id);
-        const email = getUserSecondaryText(transfer.user_id) || profileLookup[transfer.user_id]?.email || "";
+        const email =
+          getUserSecondaryText(transfer.user_id) ||
+          profileLookup[transfer.user_id]?.email ||
+          "";
         const quantity = Number(transfer.quantity || 0);
         const damaged = Number(transfer.damaged || 0);
         return [
@@ -535,9 +643,7 @@ export default function AdminPage() {
 
     const csv = rows
       .map((row) =>
-        row
-          .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
-          .join(",")
+        row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")
       )
       .join("\n");
 
@@ -596,6 +702,7 @@ export default function AdminPage() {
             email: profile.email,
             role: profile.role,
             company_name: profile.company_name || null,
+            is_active: profile.is_active !== false,
           })),
           { onConflict: "id" }
         );
@@ -1254,66 +1361,92 @@ export default function AdminPage() {
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
           <div className="rounded-3xl bg-white p-6 shadow-sm">
             <h2 className="text-2xl font-bold text-slate-900">User Management</h2>
-            <p className="mt-2 text-slate-500">Review user companies and admin access.</p>
+            <p className="mt-2 text-slate-500">
+              Edit company names, change roles, and remove or restore access.
+            </p>
 
             <div className="mt-6 overflow-x-auto">
               <table className="min-w-full">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-sm text-slate-500">
                     <th className="pb-3 pr-4 font-medium">Company / Email</th>
+                    <th className="pb-3 pr-4 font-medium">Access</th>
                     <th className="pb-3 pr-4 font-medium">Role</th>
                     <th className="pb-3 pr-4 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {profiles.map((profile) => (
-                    <tr key={profile.id} className="border-b border-slate-100 text-sm">
-                      <td className="py-3 pr-4">
-                        <div className="font-medium text-slate-900">
-                          {profile.company_name?.trim() || "No company name"}
-                        </div>
-                        <div className="text-xs text-slate-500">{profile.email}</div>
-                      </td>
+                  {profiles.map((profile) => {
+                    const accessActive = profile.is_active !== false;
 
-                      <td className="py-3 pr-4">
-                        <span
-                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                            profile.role === "admin"
-                              ? "bg-purple-100 text-purple-700"
-                              : "bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          {profile.role}
-                        </span>
-                      </td>
+                    return (
+                      <tr key={profile.id} className="border-b border-slate-100 text-sm">
+                        <td className="py-3 pr-4">
+                          <div className="font-medium text-slate-900">
+                            {profile.company_name?.trim() || "No company name"}
+                          </div>
+                          <div className="text-xs text-slate-500">{profile.email}</div>
+                        </td>
 
-                      <td className="py-3 pr-4">
-                        {profile.role === "admin" ? (
-                          <button
-                            type="button"
-                            onClick={() => updateUserRole(profile, "user")}
-                            disabled={busyAction === `role-${profile.id}`}
-                            className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                        <td className="py-3 pr-4">
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                              accessActive
+                                ? "bg-green-100 text-green-700"
+                                : "bg-red-100 text-red-700"
+                            }`}
                           >
-                            {busyAction === `role-${profile.id}` ? "Updating..." : "Make User"}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => updateUserRole(profile, "admin")}
-                            disabled={busyAction === `role-${profile.id}`}
-                            className="rounded-xl bg-purple-600 px-3 py-2 text-xs font-semibold text-white hover:bg-purple-700 disabled:opacity-60"
+                            {accessActive ? "Active" : "Removed"}
+                          </span>
+                        </td>
+
+                        <td className="py-3 pr-4">
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                              profile.role === "admin"
+                                ? "bg-purple-100 text-purple-700"
+                                : "bg-slate-100 text-slate-700"
+                            }`}
                           >
-                            {busyAction === `role-${profile.id}` ? "Updating..." : "Make Admin"}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                            {profile.role}
+                          </span>
+                        </td>
+
+                        <td className="py-3 pr-4">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => startEditUser(profile)}
+                              className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                            >
+                              Edit User
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => toggleUserAccess(profile)}
+                              disabled={busyAction === `access-${profile.id}`}
+                              className={`rounded-xl px-3 py-2 text-xs font-semibold disabled:opacity-60 ${
+                                accessActive
+                                  ? "border border-red-200 text-red-700 hover:bg-red-50"
+                                  : "border border-green-200 text-green-700 hover:bg-green-50"
+                              }`}
+                            >
+                              {busyAction === `access-${profile.id}`
+                                ? "Updating..."
+                                : accessActive
+                                ? "Remove Access"
+                                : "Restore Access"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
 
                   {profiles.length === 0 ? (
                     <tr>
-                      <td colSpan={3} className="py-6 text-sm text-slate-500">
+                      <td colSpan={4} className="py-6 text-sm text-slate-500">
                         No profiles found.
                       </td>
                     </tr>
@@ -1364,6 +1497,93 @@ export default function AdminPage() {
           </div>
         </div>
       </div>
+
+      {editingUser ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl">
+            <h3 className="text-2xl font-bold text-slate-900">Edit User</h3>
+            <p className="mt-2 text-sm text-slate-500">
+              Update company name, role, and access status.
+            </p>
+
+            <div className="mt-6 space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Company Name
+                </label>
+                <input
+                  type="text"
+                  value={editingUser.company_name}
+                  onChange={(e) =>
+                    setEditingUser({
+                      ...editingUser,
+                      company_name: e.target.value,
+                    })
+                  }
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Role
+                </label>
+                <select
+                  value={editingUser.role}
+                  onChange={(e) =>
+                    setEditingUser({
+                      ...editingUser,
+                      role: e.target.value,
+                    })
+                  }
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                >
+                  <option value="user">user</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Access
+                </label>
+                <select
+                  value={editingUser.is_active ? "active" : "removed"}
+                  onChange={(e) =>
+                    setEditingUser({
+                      ...editingUser,
+                      is_active: e.target.value === "active",
+                    })
+                  }
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                >
+                  <option value="active">Active</option>
+                  <option value="removed">Removed</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelEditUser}
+                className="rounded-2xl border border-slate-300 px-4 py-3 font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={saveUserEdits}
+                disabled={busyAction === `user-save-${editingUser.id}`}
+                className="rounded-2xl bg-[#11284a] px-4 py-3 font-semibold text-white hover:bg-[#0c1d36] disabled:opacity-60"
+              >
+                {busyAction === `user-save-${editingUser.id}` ? "Saving..." : "Save User"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

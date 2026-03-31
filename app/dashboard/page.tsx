@@ -8,6 +8,7 @@ type Profile = {
   email: string | null;
   role?: string | null;
   company_name?: string | null;
+  is_active?: boolean | null;
 };
 
 type Transfer = {
@@ -86,7 +87,7 @@ export default function DashboardPage() {
 
     const { data: profileData, error: profileError } = await supabase
       .from("profiles")
-      .select("id, email, role, company_name")
+      .select("id, email, role, company_name, is_active")
       .eq("id", user.id)
       .maybeSingle();
 
@@ -102,6 +103,7 @@ export default function DashboardPage() {
         email: cleanEmail,
         role: resolvedProfile?.role || "user",
         company_name: metadataCompanyName || resolvedProfile?.company_name || null,
+        is_active: resolvedProfile?.is_active !== false,
       };
 
       const { error: upsertError } = await supabase
@@ -116,8 +118,16 @@ export default function DashboardPage() {
           email: cleanEmail,
           role: resolvedProfile?.role || "user",
           company_name: metadataCompanyName || resolvedProfile?.company_name || null,
+          is_active: resolvedProfile?.is_active !== false,
         };
       }
+    }
+
+    if (resolvedProfile?.is_active === false) {
+      await supabase.auth.signOut();
+      alert("Your account access has been removed. Please contact Adams Pallet Plus Inc.");
+      window.location.href = "/login";
+      return;
     }
 
     setProfile(resolvedProfile);
