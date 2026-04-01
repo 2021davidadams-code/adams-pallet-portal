@@ -15,11 +15,16 @@ type Transfer = {
   id: string;
   user_id: string;
   destination: string | null;
+  to_name?: string | null;
   quantity: number | string | null;
   damaged: number | string | null;
   shipment_date: string | null;
+  transfer_date?: string | null;
   status: string | null;
   created_at: string | null;
+  transfer_number?: string | null;
+  request_type?: string | null;
+  notes?: string | null;
 };
 
 type AuditLog = {
@@ -39,6 +44,8 @@ type EditTransferForm = {
   damaged: string;
   shipment_date: string;
   status: string;
+  request_type: string;
+  notes: string;
 };
 
 type EditUserForm = {
@@ -69,6 +76,13 @@ function statusLabel(status?: string | null) {
   if (status === "pending_review") return "Pending Review";
   if (status === "completed") return "Completed";
   return status;
+}
+
+function requestTypeLabel(type?: string | null) {
+  if (!type || type === "transfer") return "Transfer";
+  if (type === "pickup_request") return "Pickup Request";
+  if (type === "shipment_request") return "Shipment Request";
+  return type;
 }
 
 function escapeHtml(value: string) {
@@ -270,7 +284,7 @@ export default function AdminPage() {
         return true;
       }
 
-      const rawDate = transfer.shipment_date || transfer.created_at;
+      const rawDate = transfer.shipment_date || transfer.transfer_date || transfer.created_at;
       if (!rawDate) return false;
 
       const transferDate = new Date(rawDate);
@@ -296,8 +310,20 @@ export default function AdminPage() {
     });
   }, [transfers, userFilter, statusFilter, dateFilter]);
 
+  const transferOnlyRecords = useMemo(() => {
+    return filteredTransfers.filter(
+      (transfer) => (transfer.request_type || "transfer") === "transfer"
+    );
+  }, [filteredTransfers]);
+
+  const serviceRequests = useMemo(() => {
+    return filteredTransfers.filter(
+      (transfer) => (transfer.request_type || "transfer") !== "transfer"
+    );
+  }, [filteredTransfers]);
+
   const totals = useMemo(() => {
-    return filteredTransfers.reduce(
+    return transferOnlyRecords.reduce(
       (acc, transfer) => {
         const quantity = Number(transfer.quantity || 0);
         const damaged = Number(transfer.damaged || 0);
@@ -322,10 +348,14 @@ export default function AdminPage() {
         completed: 0,
       }
     );
-  }, [filteredTransfers]);
+  }, [transferOnlyRecords]);
+
+  const pendingRequestCount = useMemo(() => {
+    return serviceRequests.filter((transfer) => transfer.status === "pending_review").length;
+  }, [serviceRequests]);
 
   const userSummaries = useMemo(() => {
-    const grouped = filteredTransfers.reduce<
+    const grouped = transferOnlyRecords.reduce<
       Record<
         string,
         {
@@ -360,7 +390,7 @@ export default function AdminPage() {
     }, {});
 
     return Object.values(grouped).sort((a, b) => b.pallets - a.pallets);
-  }, [filteredTransfers]);
+  }, [transferOnlyRecords]);
 
   const startEditTransfer = (transfer: Transfer) => {
     setEditingTransfer({
@@ -372,6 +402,8 @@ export default function AdminPage() {
         ? String(transfer.shipment_date).slice(0, 10)
         : "",
       status: transfer.status || "pending_review",
+      request_type: transfer.request_type || "transfer",
+      notes: transfer.notes || "",
     });
   };
 
@@ -403,12 +435,19 @@ export default function AdminPage() {
 
     setBusyAction(`save-${editingTransfer.id}`);
 
+    const effectiveDate =
+      editingTransfer.shipment_date || new Date().toISOString().slice(0, 10);
+
     const payload = {
       destination,
+      to_name: destination,
       quantity,
       damaged,
-      shipment_date: editingTransfer.shipment_date || null,
+      shipment_date: effectiveDate,
+      transfer_date: effectiveDate,
       status: editingTransfer.status || "pending_review",
+      request_type: editingTransfer.request_type || "transfer",
+      notes: editingTransfer.notes.trim() || null,
     };
 
     const { error } = await supabase
@@ -458,7 +497,7 @@ export default function AdminPage() {
 
   const deleteTransfer = async (transfer: Transfer) => {
     const confirmed = window.confirm(
-      `Delete transfer to "${transfer.destination || "Unknown destination"}"?`
+      `Delete ${requestTypeLabel(transfer.request_type)} ${transfer.transfer_number || ""}?`
     );
 
     if (!confirmed) return;
@@ -609,6 +648,8 @@ export default function AdminPage() {
   const exportCsv = () => {
     const rows = [
       [
+        "TransferNumber",
+        "Type",
         "Company",
         "Email",
         "Destination",
@@ -617,6 +658,7 @@ export default function AdminPage() {
         "NetDelivered",
         "ShipmentDate",
         "Status",
+        "Notes",
         "CreatedAt",
       ],
       ...filteredTransfers.map((transfer) => {
@@ -628,14 +670,17 @@ export default function AdminPage() {
         const quantity = Number(transfer.quantity || 0);
         const damaged = Number(transfer.damaged || 0);
         return [
+          transfer.transfer_number || "",
+          requestTypeLabel(transfer.request_type),
           company,
           email,
           transfer.destination || "",
           String(quantity),
           String(damaged),
           String(Math.max(quantity - damaged, 0)),
-          transfer.shipment_date || "",
+          transfer.shipment_date || transfer.transfer_date || "",
           statusLabel(transfer.status),
+          transfer.notes || "",
           transfer.created_at || "",
         ];
       }),
@@ -769,13 +814,15 @@ export default function AdminPage() {
 
         return `
           <tr>
+            <td>${escapeHtml(transfer.transfer_number || "")}</td>
+            <td>${escapeHtml(requestTypeLabel(transfer.request_type))}</td>
             <td>${escapeHtml(company)}</td>
             <td>${escapeHtml(email)}</td>
             <td>${escapeHtml(transfer.destination || "")}</td>
             <td>${quantity}</td>
             <td>${damaged}</td>
             <td>${Math.max(quantity - damaged, 0)}</td>
-            <td>${escapeHtml(formatDate(transfer.shipment_date || transfer.created_at))}</td>
+            <td>${escapeHtml(formatDate(transfer.shipment_date || transfer.transfer_date || transfer.created_at))}</td>
             <td>${escapeHtml(statusLabel(transfer.status))}</td>
           </tr>
         `;
@@ -807,8 +854,8 @@ export default function AdminPage() {
             <div class="card"><strong>Total Pallets:</strong><br/>${totals.totalPallets}</div>
             <div class="card"><strong>Damaged / Lost:</strong><br/>${totals.damagedLost}</div>
             <div class="card"><strong>Net Delivered:</strong><br/>${totals.netDelivered}</div>
-            <div class="card"><strong>Pending:</strong><br/>${totals.pending}</div>
-            <div class="card"><strong>Completed:</strong><br/>${totals.completed}</div>
+            <div class="card"><strong>Pending Transfers:</strong><br/>${totals.pending}</div>
+            <div class="card"><strong>Open Requests:</strong><br/>${pendingRequestCount}</div>
           </div>
 
           <h2>User Totals</h2>
@@ -833,6 +880,8 @@ export default function AdminPage() {
           <table>
             <thead>
               <tr>
+                <th>Transfer #</th>
+                <th>Type</th>
                 <th>Company</th>
                 <th>Email</th>
                 <th>Destination</th>
@@ -844,7 +893,7 @@ export default function AdminPage() {
               </tr>
             </thead>
             <tbody>
-              ${transferRows || "<tr><td colspan='8'>No rows</td></tr>"}
+              ${transferRows || "<tr><td colspan='10'>No rows</td></tr>"}
             </tbody>
           </table>
         </body>
@@ -916,7 +965,7 @@ export default function AdminPage() {
                 Admin Dashboard
               </h1>
               <p className="mt-2 text-slate-500">
-                System-wide view of users, shipments, reports, audit logs, and recovery tools.
+                System-wide view of users, transfers, requests, reports, audit logs, and recovery tools.
               </p>
               <p className="mt-2 text-sm text-slate-400">
                 Signed in as: {authEmail}
@@ -1011,13 +1060,13 @@ export default function AdminPage() {
           </div>
 
           <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">Pending</p>
+            <p className="text-sm text-slate-500">Pending Transfers</p>
             <p className="mt-3 text-4xl font-bold text-amber-600">{totals.pending}</p>
           </div>
 
-          <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">Completed</p>
-            <p className="mt-3 text-4xl font-bold text-slate-900">{totals.completed}</p>
+          <div className="rounded-3xl border-2 border-[#11284a] bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Open Requests</p>
+            <p className="mt-3 text-4xl font-bold text-[#11284a]">{pendingRequestCount}</p>
           </div>
         </div>
 
@@ -1099,7 +1148,7 @@ export default function AdminPage() {
 
           <div className="rounded-3xl bg-white p-6 shadow-sm">
             <h2 className="text-2xl font-bold text-slate-900">User Totals</h2>
-            <p className="mt-2 text-slate-500">Summary by user across current filters.</p>
+            <p className="mt-2 text-slate-500">Summary by user across transfer activity.</p>
 
             <div className="mt-6 overflow-x-auto">
               <table className="min-w-full">
@@ -1146,15 +1195,19 @@ export default function AdminPage() {
         </div>
 
         <div className="rounded-3xl bg-white p-6 shadow-sm">
-          <h2 className="text-2xl font-bold text-slate-900">Transfers</h2>
-          <p className="mt-2 text-slate-500">Review and manage all transfer records.</p>
+          <h2 className="text-2xl font-bold text-slate-900">Transfers & Requests</h2>
+          <p className="mt-2 text-slate-500">
+            Review transfer numbers, shipment activity, and user requests.
+          </p>
 
           <div className="mt-6 overflow-x-auto">
             <table className="min-w-full">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-sm text-slate-500">
+                  <th className="pb-3 pr-4 font-medium">Transfer #</th>
+                  <th className="pb-3 pr-4 font-medium">Type</th>
                   <th className="pb-3 pr-4 font-medium">Company</th>
-                  <th className="pb-3 pr-4 font-medium">Destination</th>
+                  <th className="pb-3 pr-4 font-medium">Destination / Notes</th>
                   <th className="pb-3 pr-4 font-medium">Qty</th>
                   <th className="pb-3 pr-4 font-medium">Damaged</th>
                   <th className="pb-3 pr-4 font-medium">Date</th>
@@ -1165,7 +1218,7 @@ export default function AdminPage() {
               <tbody>
                 {filteredTransfers.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-6 text-sm text-slate-500">
+                    <td colSpan={9} className="py-6 text-sm text-slate-500">
                       No transfers found for the current filters.
                     </td>
                   </tr>
@@ -1175,6 +1228,35 @@ export default function AdminPage() {
 
                     return (
                       <tr key={transfer.id} className="border-b border-slate-100 align-top text-sm">
+                        <td className="py-4 pr-4">
+                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                            {transfer.transfer_number || "Pending"}
+                          </span>
+                        </td>
+
+                        <td className="py-4 pr-4">
+                          {isEditing ? (
+                            <select
+                              value={editingTransfer.request_type}
+                              onChange={(e) =>
+                                setEditingTransfer({
+                                  ...editingTransfer,
+                                  request_type: e.target.value,
+                                })
+                              }
+                              className="rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-500"
+                            >
+                              <option value="transfer">Transfer</option>
+                              <option value="pickup_request">Pickup Request</option>
+                              <option value="shipment_request">Shipment Request</option>
+                            </select>
+                          ) : (
+                            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                              {requestTypeLabel(transfer.request_type)}
+                            </span>
+                          )}
+                        </td>
+
                         <td className="py-4 pr-4">
                           <div className="font-medium text-slate-900">
                             {getUserDisplayName(transfer.user_id)}
@@ -1188,21 +1270,42 @@ export default function AdminPage() {
 
                         <td className="py-4 pr-4">
                           {isEditing ? (
-                            <input
-                              type="text"
-                              value={editingTransfer.destination}
-                              onChange={(e) =>
-                                setEditingTransfer({
-                                  ...editingTransfer,
-                                  destination: e.target.value,
-                                })
-                              }
-                              className="w-48 rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-500"
-                            />
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                value={editingTransfer.destination}
+                                onChange={(e) =>
+                                  setEditingTransfer({
+                                    ...editingTransfer,
+                                    destination: e.target.value,
+                                  })
+                                }
+                                className="w-56 rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-500"
+                              />
+                              <input
+                                type="text"
+                                value={editingTransfer.notes}
+                                onChange={(e) =>
+                                  setEditingTransfer({
+                                    ...editingTransfer,
+                                    notes: e.target.value,
+                                  })
+                                }
+                                placeholder="Notes"
+                                className="w-56 rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-500"
+                              />
+                            </div>
                           ) : (
-                            <span className="text-slate-700">
-                              {transfer.destination || "—"}
-                            </span>
+                            <>
+                              <div className="text-slate-900">
+                                {transfer.destination || "—"}
+                              </div>
+                              {transfer.notes ? (
+                                <div className="mt-1 text-xs text-slate-500">
+                                  {transfer.notes}
+                                </div>
+                              ) : null}
+                            </>
                           )}
                         </td>
 
@@ -1261,7 +1364,7 @@ export default function AdminPage() {
                             />
                           ) : (
                             <span className="text-slate-700">
-                              {formatDate(transfer.shipment_date || transfer.created_at)}
+                              {formatDate(transfer.shipment_date || transfer.transfer_date || transfer.created_at)}
                             </span>
                           )}
                         </td>
