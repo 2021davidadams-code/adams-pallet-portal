@@ -2,41 +2,33 @@
 
 import { FormEvent, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-export default function SignUpPage() {
-  const router = useRouter();
+const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.toLowerCase() || "";
+
+export default function SignupPage() {
   const supabase = createClient();
 
   const [companyName, setCompanyName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
 
-  const handleSignUp = async (e: FormEvent<HTMLFormElement>) => {
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [errorText, setErrorText] = useState("");
+
+  const handleSignup = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
-    setErrorMessage("");
+    setMessage("");
+    setErrorText("");
 
-    const cleanCompanyName = companyName.trim();
+    const cleanCompany = companyName.trim();
     const cleanEmail = email.trim().toLowerCase();
+    const isAdminEmail = cleanEmail === ADMIN_EMAIL && ADMIN_EMAIL !== "";
 
-    if (!cleanCompanyName) {
-      setErrorMessage("Company name is required.");
-      setLoading(false);
-      return;
-    }
-
-    if (!cleanEmail) {
-      setErrorMessage("Email is required.");
-      setLoading(false);
-      return;
-    }
-
-    if (!password || password.length < 6) {
-      setErrorMessage("Password must be at least 6 characters.");
+    if (!cleanCompany) {
+      setErrorText("Company name is required.");
       setLoading(false);
       return;
     }
@@ -45,116 +37,122 @@ export default function SignUpPage() {
       email: cleanEmail,
       password,
       options: {
-        emailRedirectTo: `${window.location.origin}/login`,
         data: {
-          company_name: cleanCompanyName,
+          company_name: cleanCompany,
         },
       },
     });
 
     if (error) {
-      setErrorMessage(error.message);
+      setErrorText(error.message);
       setLoading(false);
       return;
     }
 
-    const user = data.user;
-
-    if (user) {
+    if (data.user) {
       const { error: profileError } = await supabase.from("profiles").upsert(
         {
-          id: user.id,
+          id: data.user.id,
           email: cleanEmail,
-          company_name: cleanCompanyName,
-          role: "user",
+          role: isAdminEmail ? "admin" : "user",
+          company_name: cleanCompany,
+          is_active: isAdminEmail,
         },
         { onConflict: "id" }
       );
 
       if (profileError) {
-        setErrorMessage(profileError.message);
+        setErrorText(profileError.message);
         setLoading(false);
         return;
       }
     }
 
+    if (isAdminEmail) {
+      setMessage("Admin account created. You can now sign in.");
+    } else {
+      setMessage(
+        "Account created successfully. Your account is waiting for admin approval before dashboard access."
+      );
+    }
+
+    setCompanyName("");
+    setEmail("");
+    setPassword("");
     setLoading(false);
-    router.push("/login");
   };
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
       <div className="w-full max-w-md rounded-3xl bg-white p-8 shadow-sm">
         <h1 className="text-3xl font-bold text-slate-900">Create Account</h1>
-        <p className="mt-2 text-sm text-slate-500">
-          Sign up to access the Adams Pallet Plus platform.
+        <p className="mt-2 text-slate-500">
+          Register your company for Adams Pallet Plus access.
         </p>
 
-        <form onSubmit={handleSignUp} className="mt-6 space-y-4">
+        <form onSubmit={handleSignup} className="mt-6 space-y-4">
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Company Name
-            </label>
             <input
               type="text"
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
-              placeholder="Enter company name"
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none transition focus:border-slate-500"
+              placeholder="Company Name"
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
               required
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Email
-            </label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter email"
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none transition focus:border-slate-500"
+              placeholder="Email"
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
               required
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Password
-            </label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter password"
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none transition focus:border-slate-500"
+              placeholder="Password"
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
               required
             />
           </div>
 
-          {errorMessage ? (
-            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {errorMessage}
-            </div>
-          ) : null}
-
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-2xl bg-[#11284a] px-4 py-3 font-semibold text-white transition hover:bg-[#0c1d36] disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full rounded-2xl bg-[#11284a] px-4 py-3 font-semibold text-white hover:bg-[#0c1d36] disabled:opacity-60"
           >
-            {loading ? "Creating Account..." : "Create Account"}
+            {loading ? "Creating Account..." : "Sign Up"}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-slate-500">
+        {message ? (
+          <div className="mt-4 rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+            {message}
+          </div>
+        ) : null}
+
+        {errorText ? (
+          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {errorText}
+          </div>
+        ) : null}
+
+        <div className="mt-6 text-sm text-slate-500">
           Already have an account?{" "}
           <Link href="/login" className="font-semibold text-[#11284a] hover:underline">
             Login
           </Link>
-        </p>
+        </div>
       </div>
     </div>
   );
 }
+

@@ -15,11 +15,16 @@ type Transfer = {
   id: string;
   user_id: string;
   destination: string | null;
+  to_name?: string | null;
   quantity: number | string | null;
   damaged: number | string | null;
   shipment_date: string | null;
+  transfer_date?: string | null;
   status: string | null;
   created_at: string | null;
+  transfer_number?: string | null;
+  request_type?: string | null;
+  notes?: string | null;
 };
 
 const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.toLowerCase() || "";
@@ -38,22 +43,39 @@ function statusLabel(status?: string | null) {
   return status;
 }
 
+function requestTypeLabel(type?: string | null) {
+  if (!type || type === "transfer") return "Transfer";
+  if (type === "pickup_request") return "Pickup Request";
+  if (type === "shipment_request") return "Shipment Request";
+  return type;
+}
+
 export default function DashboardPage() {
   const supabase = createClient();
 
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
+  const [approvalBlocked, setApprovalBlocked] = useState(false);
+  const [submittingTransfer, setSubmittingTransfer] = useState(false);
+  const [submittingRequest, setSubmittingRequest] = useState(false);
   const [pageError, setPageError] = useState("");
 
   const [userId, setUserId] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [records, setRecords] = useState<Transfer[]>([]);
 
   const [destination, setDestination] = useState("");
   const [quantity, setQuantity] = useState("");
   const [damaged, setDamaged] = useState("");
   const [shipmentDate, setShipmentDate] = useState("");
+
+  const [requestType, setRequestType] = useState<"pickup_request" | "shipment_request">(
+    "pickup_request"
+  );
+  const [requestDestination, setRequestDestination] = useState("");
+  const [requestQuantity, setRequestQuantity] = useState("");
+  const [requestDate, setRequestDate] = useState("");
+  const [requestNotes, setRequestNotes] = useState("");
 
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
@@ -61,6 +83,7 @@ export default function DashboardPage() {
   const loadDashboard = async () => {
     setLoading(true);
     setPageError("");
+    setApprovalBlocked(false);
 
     const {
       data: { user },
@@ -97,13 +120,15 @@ export default function DashboardPage() {
 
     let resolvedProfile = (profileData as Profile | null) || null;
 
-    if (!resolvedProfile || (!resolvedProfile.company_name && metadataCompanyName)) {
+    if (!resolvedProfile) {
+      const isAdminEmail = cleanEmail === ADMIN_EMAIL && ADMIN_EMAIL !== "";
+
       const upsertPayload = {
         id: user.id,
         email: cleanEmail,
-        role: resolvedProfile?.role || "user",
-        company_name: metadataCompanyName || resolvedProfile?.company_name || null,
-        is_active: resolvedProfile?.is_active !== false,
+        role: isAdminEmail ? "admin" : "user",
+        company_name: metadataCompanyName || null,
+        is_active: isAdminEmail ? true : true,
       };
 
       const { error: upsertError } = await supabase
@@ -113,24 +138,17 @@ export default function DashboardPage() {
       if (upsertError) {
         console.log("Profile upsert error:", upsertError.message || upsertError);
       } else {
-        resolvedProfile = {
-          id: user.id,
-          email: cleanEmail,
-          role: resolvedProfile?.role || "user",
-          company_name: metadataCompanyName || resolvedProfile?.company_name || null,
-          is_active: resolvedProfile?.is_active !== false,
-        };
+        resolvedProfile = upsertPayload;
       }
     }
 
+    setProfile(resolvedProfile);
+
     if (resolvedProfile?.is_active === false) {
-      await supabase.auth.signOut();
-      alert("Your account access has been removed. Please contact Adams Pallet Plus Inc.");
-      window.location.href = "/login";
+      setApprovalBlocked(true);
+      setLoading(false);
       return;
     }
-
-    setProfile(resolvedProfile);
 
     const { data: transfersData, error: transfersError } = await supabase
       .from("transfers")
@@ -140,9 +158,9 @@ export default function DashboardPage() {
 
     if (transfersError) {
       console.log("Transfers fetch error:", transfersError.message || transfersError);
-      setTransfers([]);
+      setRecords([]);
     } else {
-      setTransfers((transfersData as Transfer[]) || []);
+      setRecords((transfersData as Transfer[]) || []);
     }
 
     setLoading(false);
@@ -165,11 +183,11 @@ export default function DashboardPage() {
     (profile?.role || "").toLowerCase() === "admin" ||
     (authEmail && ADMIN_EMAIL && authEmail === ADMIN_EMAIL);
 
-  const filteredTransfers = useMemo(() => {
+  const filteredRecords = useMemo(() => {
     const now = new Date();
 
-    return transfers.filter((transfer) => {
-      if (statusFilter !== "all" && (transfer.status || "") !== statusFilter) {
+    return records.filter((record) => {
+      if (statusFilter !== "all" && (record.status || "") !== statusFilter) {
         return false;
       }
 
@@ -177,38 +195,46 @@ export default function DashboardPage() {
         return true;
       }
 
-      const rawDate = transfer.shipment_date || transfer.created_at;
+      const rawDate = record.shipment_date || record.transfer_date || record.created_at;
       if (!rawDate) return false;
 
-      const transferDate = new Date(rawDate);
-      if (Number.isNaN(transferDate.getTime())) return false;
+      const rowDate = new Date(rawDate);
+      if (Number.isNaN(rowDate.getTime())) return false;
 
       if (dateFilter === "today") {
-        return transferDate.toDateString() === now.toDateString();
+        return rowDate.toDateString() === now.toDateString();
       }
 
       if (dateFilter === "last7") {
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(now.getDate() - 7);
-        return transferDate >= sevenDaysAgo;
+        return rowDate >= sevenDaysAgo;
       }
 
       if (dateFilter === "last30") {
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(now.getDate() - 30);
-        return transferDate >= thirtyDaysAgo;
+        return rowDate >= thirtyDaysAgo;
       }
 
       return true;
     });
-  }, [transfers, statusFilter, dateFilter]);
+  }, [records, statusFilter, dateFilter]);
+
+  const transferRecords = useMemo(() => {
+    return filteredRecords.filter((record) => (record.request_type || "transfer") === "transfer");
+  }, [filteredRecords]);
+
+  const serviceRequests = useMemo(() => {
+    return filteredRecords.filter((record) => (record.request_type || "transfer") !== "transfer");
+  }, [filteredRecords]);
 
   const totals = useMemo(() => {
-    return filteredTransfers.reduce(
-      (acc, transfer) => {
-        const qty = Number(transfer.quantity || 0);
-        const dmg = Number(transfer.damaged || 0);
-        const status = transfer.status || "";
+    return transferRecords.reduce(
+      (acc, record) => {
+        const qty = Number(record.quantity || 0);
+        const dmg = Number(record.damaged || 0);
+        const status = record.status || "";
 
         acc.totalTransfers += 1;
         acc.totalPallets += qty;
@@ -229,7 +255,11 @@ export default function DashboardPage() {
         completed: 0,
       }
     );
-  }, [filteredTransfers]);
+  }, [transferRecords]);
+
+  const openRequestCount = useMemo(() => {
+    return serviceRequests.filter((record) => record.status === "pending_review").length;
+  }, [serviceRequests]);
 
   const completionRate =
     totals.totalTransfers > 0
@@ -252,6 +282,7 @@ export default function DashboardPage() {
     const cleanDestination = destination.trim();
     const qty = Number(quantity || 0);
     const dmg = Number(damaged || 0);
+    const finalDate = shipmentDate || new Date().toISOString().slice(0, 10);
 
     if (!cleanDestination) {
       alert("Destination name is required.");
@@ -273,22 +304,26 @@ export default function DashboardPage() {
       return;
     }
 
-    setSubmitting(true);
+    setSubmittingTransfer(true);
 
     const { error } = await supabase.from("transfers").insert([
       {
         user_id: userId,
         destination: cleanDestination,
+        to_name: cleanDestination,
         quantity: qty,
         damaged: dmg,
-        shipment_date: shipmentDate || null,
+        shipment_date: finalDate,
+        transfer_date: finalDate,
         status: "pending_review",
+        request_type: "transfer",
+        notes: null,
       },
     ]);
 
     if (error) {
       alert(error.message);
-      setSubmitting(false);
+      setSubmittingTransfer(false);
       return;
     }
 
@@ -297,7 +332,64 @@ export default function DashboardPage() {
     setDamaged("");
     setShipmentDate("");
     await loadDashboard();
-    setSubmitting(false);
+    setSubmittingTransfer(false);
+  };
+
+  const handleServiceRequest = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    const cleanDestination = requestDestination.trim();
+    const qty = Number(requestQuantity || 0);
+    const finalDate = requestDate || new Date().toISOString().slice(0, 10);
+    const cleanNotes = requestNotes.trim();
+
+    if (!cleanDestination) {
+      alert("Location or destination is required.");
+      return;
+    }
+
+    if (Number.isNaN(qty) || qty <= 0) {
+      alert("Requested quantity must be greater than 0.");
+      return;
+    }
+
+    if (!userId) {
+      alert("User not loaded yet. Please try again.");
+      return;
+    }
+
+    setSubmittingRequest(true);
+
+    const { error } = await supabase.from("transfers").insert([
+      {
+        user_id: userId,
+        destination: cleanDestination,
+        to_name: cleanDestination,
+        quantity: qty,
+        damaged: 0,
+        shipment_date: finalDate,
+        transfer_date: finalDate,
+        status: "pending_review",
+        request_type: requestType,
+        notes: cleanNotes || null,
+      },
+    ]);
+
+    if (error) {
+      alert(error.message);
+      setSubmittingRequest(false);
+      return;
+    }
+
+    setRequestDestination("");
+    setRequestQuantity("");
+    setRequestDate("");
+    setRequestNotes("");
+    setRequestType("pickup_request");
+    await loadDashboard();
+    setSubmittingRequest(false);
+
+    alert("Request submitted. Admin can now see it on the admin dashboard.");
   };
 
   const signOut = async () => {
@@ -310,6 +402,48 @@ export default function DashboardPage() {
       <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
         <div className="rounded-3xl bg-white px-8 py-6 shadow-sm">
           <p className="text-lg font-semibold text-slate-900">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (approvalBlocked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
+        <div className="w-full max-w-xl rounded-3xl bg-white p-8 shadow-sm">
+          <h1 className="text-3xl font-bold text-slate-900">Awaiting Admin Approval</h1>
+          <p className="mt-3 text-slate-600">
+            Your account has been created, but it must be approved by Adams Pallet Plus before
+            dashboard access is allowed.
+          </p>
+
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Company
+            </p>
+            <p className="mt-1 text-lg font-bold text-slate-900">
+              {companyDisplayName}
+            </p>
+            {secondaryIdentity ? (
+              <p className="mt-1 text-sm text-slate-500">{secondaryIdentity}</p>
+            ) : null}
+          </div>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <a
+              href="/"
+              className="rounded-2xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-100"
+            >
+              Back to Home
+            </a>
+            <button
+              type="button"
+              onClick={signOut}
+              className="rounded-2xl bg-[#11284a] px-5 py-3 font-semibold text-white hover:bg-[#0c1d36]"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -390,13 +524,13 @@ export default function DashboardPage() {
           </div>
 
           <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">Pending</p>
+            <p className="text-sm text-slate-500">Pending Transfers</p>
             <p className="mt-3 text-4xl font-bold text-amber-600">{totals.pending}</p>
           </div>
 
           <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">Completed</p>
-            <p className="mt-3 text-4xl font-bold text-slate-900">{totals.completed}</p>
+            <p className="text-sm text-slate-500">Open Requests</p>
+            <p className="mt-3 text-4xl font-bold text-[#11284a]">{openRequestCount}</p>
           </div>
         </div>
 
@@ -441,7 +575,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="grid gap-6 xl:grid-cols-[360px_360px_minmax(0,1fr)]">
           <div className="rounded-3xl bg-white p-6 shadow-sm">
             <h2 className="text-2xl font-bold text-slate-900">Add Transfer</h2>
             <p className="mt-2 text-slate-500">Create a new pallet transfer.</p>
@@ -490,17 +624,87 @@ export default function DashboardPage() {
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submittingTransfer}
                 className="w-full rounded-2xl bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
               >
-                {submitting ? "Adding Transfer..." : "Add Transfer"}
+                {submittingTransfer ? "Adding Transfer..." : "Add Transfer"}
               </button>
             </form>
           </div>
 
           <div className="rounded-3xl bg-white p-6 shadow-sm">
-            <h2 className="text-2xl font-bold text-slate-900">Transfers</h2>
-            <p className="mt-2 text-slate-500">View and manage your pallet movements.</p>
+            <h2 className="text-2xl font-bold text-slate-900">Request Service</h2>
+            <p className="mt-2 text-slate-500">
+              Submit a pickup or shipment request for admin review.
+            </p>
+
+            <form onSubmit={handleServiceRequest} className="mt-6 space-y-4">
+              <div>
+                <select
+                  value={requestType}
+                  onChange={(e) =>
+                    setRequestType(e.target.value as "pickup_request" | "shipment_request")
+                  }
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                >
+                  <option value="pickup_request">Pickup Request</option>
+                  <option value="shipment_request">Shipment Request</option>
+                </select>
+              </div>
+
+              <div>
+                <input
+                  type="text"
+                  value={requestDestination}
+                  onChange={(e) => setRequestDestination(e.target.value)}
+                  placeholder="Pickup or shipment location"
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <input
+                  type="number"
+                  value={requestQuantity}
+                  onChange={(e) => setRequestQuantity(e.target.value)}
+                  placeholder="Requested pallet quantity"
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <input
+                  type="date"
+                  value={requestDate}
+                  onChange={(e) => setRequestDate(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                />
+              </div>
+
+              <div>
+                <textarea
+                  value={requestNotes}
+                  onChange={(e) => setRequestNotes(e.target.value)}
+                  placeholder="Notes for admin"
+                  className="min-h-[120px] w-full rounded-2xl border border-slate-300 px-4 py-3 outline-none focus:border-slate-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={submittingRequest}
+                className="w-full rounded-2xl bg-[#11284a] px-4 py-3 font-semibold text-white hover:bg-[#0c1d36] disabled:opacity-60"
+              >
+                {submittingRequest ? "Submitting Request..." : "Submit Request"}
+              </button>
+            </form>
+          </div>
+
+          <div className="rounded-3xl bg-white p-6 shadow-sm">
+            <h2 className="text-2xl font-bold text-slate-900">Transfers & Requests</h2>
+            <p className="mt-2 text-slate-500">View your transfer history and service requests.</p>
 
             <div className="mt-6 space-y-5">
               <div>
@@ -554,40 +758,55 @@ export default function DashboardPage() {
             </div>
 
             <div className="mt-6 overflow-hidden rounded-3xl border border-slate-200">
-              {filteredTransfers.length === 0 ? (
+              {filteredRecords.length === 0 ? (
                 <div className="p-8 text-center text-slate-500">
-                  No transfers found for the current filters.
+                  No transfers or requests found for the current filters.
                 </div>
               ) : (
                 <div className="divide-y divide-slate-200">
-                  {filteredTransfers.map((transfer) => {
-                    const qty = Number(transfer.quantity || 0);
-                    const dmg = Number(transfer.damaged || 0);
+                  {filteredRecords.map((record) => {
+                    const qty = Number(record.quantity || 0);
+                    const dmg = Number(record.damaged || 0);
                     const net = Math.max(qty - dmg, 0);
+                    const type = record.request_type || "transfer";
 
                     return (
-                      <div key={transfer.id} className="bg-white p-5">
+                      <div key={record.id} className="bg-white p-5">
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                           <div>
-                            <p className="text-lg font-bold text-slate-900">
-                              {transfer.destination || "Unnamed Destination"}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                                {record.transfer_number || "Pending Number"}
+                              </span>
+                              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                                {requestTypeLabel(type)}
+                              </span>
+                            </div>
+
+                            <p className="mt-3 text-lg font-bold text-slate-900">
+                              {record.destination || "Unnamed Destination"}
                             </p>
                             <p className="mt-1 text-sm text-slate-500">
-                              {formatDate(transfer.shipment_date || transfer.created_at)}
+                              {formatDate(record.shipment_date || record.transfer_date || record.created_at)}
                             </p>
                             <p className="mt-2 text-sm text-slate-500">
                               Company: {companyDisplayName}
                             </p>
+                            {record.notes ? (
+                              <p className="mt-2 text-sm text-slate-600">
+                                Notes: {record.notes}
+                              </p>
+                            ) : null}
                           </div>
 
                           <span
                             className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${
-                              transfer.status === "completed"
+                              record.status === "completed"
                                 ? "bg-green-100 text-green-700"
                                 : "bg-amber-100 text-amber-700"
                             }`}
                           >
-                            {statusLabel(transfer.status)}
+                            {statusLabel(record.status)}
                           </span>
                         </div>
 
@@ -603,14 +822,18 @@ export default function DashboardPage() {
                             <p className="text-xs uppercase tracking-wide text-slate-500">
                               Damaged / Lost
                             </p>
-                            <p className="mt-2 text-xl font-bold text-red-600">{dmg}</p>
+                            <p className="mt-2 text-xl font-bold text-red-600">
+                              {type === "transfer" ? dmg : 0}
+                            </p>
                           </div>
 
                           <div className="rounded-2xl bg-slate-50 p-4">
                             <p className="text-xs uppercase tracking-wide text-slate-500">
-                              Net Delivered
+                              {type === "transfer" ? "Net Delivered" : "Request Status"}
                             </p>
-                            <p className="mt-2 text-xl font-bold text-green-600">{net}</p>
+                            <p className="mt-2 text-xl font-bold text-green-600">
+                              {type === "transfer" ? net : statusLabel(record.status)}
+                            </p>
                           </div>
                         </div>
                       </div>
