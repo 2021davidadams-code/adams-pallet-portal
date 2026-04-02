@@ -323,10 +323,10 @@ export default function HomePage() {
                 Phone
               </p>
               <a
-                href="tel:15199199857"
+                href="tel:+17056065293"
                 className="mt-3 block text-lg font-bold text-[#11284a] hover:text-[#0c1d36]"
               >
-                519-919-9857
+                +1 705-606-5293
               </a>
               <p className="mt-2 text-sm text-[#6b7280]">
                 Call for service inquiries and business support.
@@ -338,10 +338,10 @@ export default function HomePage() {
                 Email
               </p>
               <a
-                href="mailto:daverino1@hotmail.com"
+                href="mailto:dispatch@adamspalletplus.ca"
                 className="mt-3 block text-lg font-bold text-[#11284a] hover:text-[#0c1d36]"
               >
-                daverino1@hotmail.com
+                dispatch@adamspalletplus.ca
               </a>
               <p className="mt-2 text-sm text-[#6b7280]">
                 Email us for account access, support, or general questions.
@@ -407,11 +407,11 @@ export default function HomePage() {
                   </p>
                   <p>
                     <span className="font-semibold text-white">Phone:</span>{" "}
-                    519-919-9857
+                    +1 705-606-5293
                   </p>
                   <p>
                     <span className="font-semibold text-white">Email:</span>{" "}
-                    daverino1@hotmail.com
+                    dispatch@adamspalletplus.ca
                   </p>
                   <p>
                     <span className="font-semibold text-white">Location:</span>{" "}
@@ -440,6 +440,12 @@ export default function HomePage() {
           </div>
 
           <div className="flex flex-wrap gap-4">
+            <a href="tel:+17056065293" className="hover:text-[#11284a]">
+              +1 705-606-5293
+            </a>
+            <a href="mailto:dispatch@adamspalletplus.ca" className="hover:text-[#11284a]">
+              dispatch@adamspalletplus.ca
+            </a>
             <Link href="/login" className="hover:text-[#11284a]">
               Login
             </Link>
