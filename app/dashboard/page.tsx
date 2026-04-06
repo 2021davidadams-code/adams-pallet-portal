@@ -333,34 +333,69 @@ export default function DashboardPage() {
     setShipmentDate("");
     await loadDashboard();
     setSubmittingTransfer(false);
-  };
+};
 
-  const handleServiceRequest = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+ const sendServiceRequestNotification = async (record: Transfer) => {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
 
-    const cleanDestination = requestDestination.trim();
-    const qty = Number(requestQuantity || 0);
-    const finalDate = requestDate || new Date().toISOString().slice(0, 10);
-    const cleanNotes = requestNotes.trim();
+    if (!session?.access_token) return;
 
-    if (!cleanDestination) {
-      alert("Location or destination is required.");
-      return;
-    }
+    await fetch("/api/notifications/request", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        userId,
+        companyName: companyDisplayName,
+        requestType: record.request_type || "transfer",
+        destination: record.destination || "",
+        quantity: Number(record.quantity || 0),
+        requestDate:
+          record.shipment_date ||
+          record.transfer_date ||
+          new Date().toISOString().slice(0, 10),
+        notes: record.notes || "",
+        transferNumber: record.transfer_number || "",
+      }),
+    });
+  } catch (error) {
+    console.error("Notification email failed:", error);
+  }
+};
+ 
+const handleServiceRequest = async (e: FormEvent<HTMLFormElement>) => {
+  e.preventDefault();
 
-    if (Number.isNaN(qty) || qty <= 0) {
-      alert("Requested quantity must be greater than 0.");
-      return;
-    }
+  const cleanDestination = requestDestination.trim();
+  const qty = Number(requestQuantity || 0);
+  const finalDate = requestDate || new Date().toISOString().slice(0, 10);
+  const cleanNotes = requestNotes.trim();
 
-    if (!userId) {
-      alert("User not loaded yet. Please try again.");
-      return;
-    }
+  if (!cleanDestination) {
+    alert("Location or destination is required.");
+    return;
+  }
 
-    setSubmittingRequest(true);
+  if (Number.isNaN(qty) || qty <= 0) {
+    alert("Requested quantity must be greater than 0.");
+    return;
+  }
 
-    const { error } = await supabase.from("transfers").insert([
+  if (!userId) {
+    alert("User not loaded yet. Please try again.");
+    return;
+  }
+
+  setSubmittingRequest(true);
+
+  const { data, error } = await supabase
+    .from("transfers")
+    .insert([
       {
         user_id: userId,
         destination: cleanDestination,
@@ -373,24 +408,29 @@ export default function DashboardPage() {
         request_type: requestType,
         notes: cleanNotes || null,
       },
-    ]);
+    ])
+    .select()
+    .single();
 
-    if (error) {
-      alert(error.message);
-      setSubmittingRequest(false);
-      return;
-    }
-
-    setRequestDestination("");
-    setRequestQuantity("");
-    setRequestDate("");
-    setRequestNotes("");
-    setRequestType("pickup_request");
-    await loadDashboard();
+  if (error) {
+    alert(error.message);
     setSubmittingRequest(false);
+    return;
+  }
 
-    alert("Request submitted. Admin can now see it on the admin dashboard.");
-  };
+  setRequestDestination("");
+  setRequestQuantity("");
+  setRequestDate("");
+  setRequestNotes("");
+  setRequestType("pickup_request");
+
+  await sendServiceRequestNotification(data as Transfer);
+  await loadDashboard();
+  setSubmittingRequest(false);
+
+  alert("Request submitted. Admin has been notified by email.");
+};
+
 
   const signOut = async () => {
     await supabase.auth.signOut();
