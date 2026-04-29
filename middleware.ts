@@ -2,24 +2,6 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 export async function middleware(request: NextRequest) {
-  const pathname = request.nextUrl.pathname;
-
-  const isProtectedPage =
-    pathname.startsWith("/dashboard") ||
-    pathname.startsWith("/admin") ||
-    pathname.startsWith("/billing") ||
-    pathname.startsWith("/incidents") ||
-    pathname.startsWith("/pickups") ||
-    pathname.startsWith("/transfers");
-
-  const isAuthPage =
-    pathname.startsWith("/login") ||
-    pathname.startsWith("/signup");
-
-  if (!isProtectedPage && !isAuthPage) {
-    return NextResponse.next();
-  }
-
   let response = NextResponse.next({
     request,
   });
@@ -59,15 +41,9 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user && isProtectedPage) {
+  if (!user) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    return NextResponse.redirect(url);
-  }
-
-  if (user && isAuthPage) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
     return NextResponse.redirect(url);
   }
 
@@ -82,7 +58,5 @@ export const config = {
     "/incidents/:path*",
     "/pickups/:path*",
     "/transfers/:path*",
-    "/login",
-    "/signup",
   ],
 };
