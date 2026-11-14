@@ -423,10 +423,10 @@ export default function HomePage() {
                 Phone
               </p>
               <a
-                href="tel:+17056065293"
+                href="tel:+12267360001"
                 className="mt-3 block text-lg font-bold text-[#11284a] hover:text-[#0c1d36]"
               >
-                +1 705-606-5293
+                +1 226-736-0001
               </a>
               <p className="mt-2 text-sm text-[#6b7280]">
                 Call for service inquiries and business support.
@@ -507,7 +507,7 @@ export default function HomePage() {
                   </p>
                   <p>
                     <span className="font-semibold text-white">Phone:</span>{" "}
-                    +1 705-606-5293
+                    +1 226-736-0001
                   </p>
                   <p>
                     <span className="font-semibold text-white">Email:</span>{" "}
@@ -543,8 +543,8 @@ export default function HomePage() {
             <a href={quoteMailto} className="hover:text-[#11284a]">
               Request Quote
             </a>
-            <a href="tel:+17056065293" className="hover:text-[#11284a]">
-              +1 705-606-5293
+            <a href="tel:+12267360001" className="hover:text-[#11284a]">
+              +1 226-736-0001
             </a>
             <a href="mailto:dispatch@adamspalletplus.ca" className="hover:text-[#11284a]">
               dispatch@adamspalletplus.ca
